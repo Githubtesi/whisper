@@ -55,5 +55,53 @@ pip install -r requirements.txt
 
 + 初期プロンプト: 日本語の認識精度や句読点の有無を調整するためのヒント文章。
 
+## 実行ファイル（.exe）の作成方法
+
+本ツールを Python がインストールされていない環境でも動作させるために、.exe 形式に変換する手順を説明します。
+
+### 1. ビルド用ツールのインストール
+GUIで簡単に設定できる auto-py-to-exe を使用します。
+
+```bash
+pip install auto-py-to-exe
+```
+
+### 2. 変換設定
+ターミナルで auto-py-to-exe を起動し、以下の通り設定してください。
+
++ Script Location: app.py を選択
+
++ One File: 「One Directory」を選択（推奨）
+
+  ※ faster-whisper はライブラリサイズが大きいため、One File にすると起動が著しく遅くなります。
+
++ Console Window: 「Window Based (Hide Console)」を選択
+
+  ※ これを選択しないと、使用中に常に黒い画面（コンソール）が表示されます。
+
++ Advanced (Hidden Imports): 以下のライブラリを追加してください
+
+  + customtkinter
+
+  + faster_whisper
+
+  + pynput.keyboard._win32
+
+### 3. 注意事項
++ FFmpeg: 作成した .exe を実行するPCにも、システムに FFmpeg がインストールされている必要があります。
+
++ モデルのキャッシュ: 実行ファイルを実行すると、モデル（small等）は初回のみ C:\Users\ユーザー名\.cache\whisper にダウンロードされます。
+
++ ファイルサイズ: PyTorch 等の依存関係を含むため、ビルド後のフォルダサイズは 1GB 程度になります。
+
+## Releases (実行ファイルのダウンロード)
+Python環境の構築が不要な、Windows用ビルド済みパッケージを公開しています.
+
+whisper\Releases\app.zip
+
+をダウンロードしていただき、解凍後、app.exeを実行してください。
+
+※実行ファイル版を使用する場合でも、システムに FFmpeg がインストールされている必要があります。インストールされていない場合はこちらを参考にセットアップしてください。
+
 ## ライセンス
 MIT License
