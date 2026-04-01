@@ -49,3 +49,7 @@ tqdm==4.67.3
 typer==0.24.1
 typing_extensions==4.15.0
 urllib3==2.6.3
+faster-whisper
+pynput
+pyperclip
+pyaudio
