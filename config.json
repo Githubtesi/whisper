@@ -1,5 +1,9 @@
 {
   "model_size": "large-v3-turbo",
-  "hotkey": "f8",
+  "hotkey": [
+    "ctrl_l",
+    "alt_l",
+    "shift"
+  ],
   "initial_prompt": "句読点をつけて自然な日本語で。"
 }
