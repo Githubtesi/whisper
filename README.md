@@ -142,9 +142,9 @@ GPU（CUDA）を使用することで、CPU処理と比較して約 5倍〜10倍
 
 コピー元候補:
 
-    C:\Users\[USER]\PycharmProjects\whisper\.venv\Lib\site-packages\nvidia\cudnn\bin
+    C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\cublasLt64_12.dll
     
-    C:\Users\[USER]\PycharmProjects\whisper\.venv\Lib\site-packages\nvidia\cublas\bin
+    C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\cublas64_12.dll
 
 ## ライセンス
 MIT License
