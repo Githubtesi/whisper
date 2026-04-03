@@ -1,8 +1,16 @@
 import os
+import sys
+
+# EXE化された環境（frozen）かどうかを判定
+if getattr(sys, 'frozen', False):
+    # EXEがあるフォルダパスを取得
+    basedir = os.path.dirname(sys.executable)
+    # DLL検索パスに強制追加
+    os.add_dll_directory(basedir)
+
 import json
 import threading
 import wave
-import sys
 import pyaudio
 import pyperclip
 import customtkinter as ctk
