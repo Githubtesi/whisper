@@ -94,14 +94,49 @@ pip install auto-py-to-exe
 
 + ファイルサイズ: PyTorch 等の依存関係を含むため、ビルド後のフォルダサイズは 1GB 程度になります。
 
-## Releases (実行ファイルのダウンロード)
-Python環境の構築が不要な、Windows用ビルド済みパッケージを公開しています.
 
-whisper\Releases\app.zip
+## 🚀 GPU (NVIDIA) による高速化
+NVIDIA製GPUを搭載したPCでは、CUDAを利用して文字起こし速度を大幅に向上させることが可能です。
 
-をダウンロードしていただき、解凍後、app.exeを実行してください。
+### 1. システム要件
 
-※実行ファイル版を使用する場合でも、システムに FFmpeg がインストールされている必要があります。インストールされていない場合はこちらを参考にセットアップしてください。
+  GPU: NVIDIA製 GPU (VRAM 4GB以上推奨)
+  
+  Driver: CUDA 13.2 以上に対応した最新の NVIDIA公式ドライバ
+  
+  Runtime: CUDA Toolkit 13.2
+
+
+
+### 2. ライブラリのインストール
+
+   GPUを使用するには、Python環境に以下のライブラリを追加してください。
+
+```bash
+    pip install nvidia-cublas-cu13 nvidia-cudnn-cu13
+```
+※使用しているCUDAのバージョンに合わせて cu11 または cu12 を選択してください。
+
+
+### 3. GPU用ライブラリ (DLL) の配置
+faster-whisper の動作には、CUDAおよびcuDNNのランタイムライブラリが必要です。エラーが出る場合は、以下の手順を確認してください。
+
+1. [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) をインストールする。
+
+2. もしくは、nvidia-cublas-cu12 などのパッケージに含まれるDLLを、app.py と同じディレクトリまたはシステムパスが通った場所に配置してください。
+
+
+### 4. アプリでの設定方法
+アプリを起動し、「設定」から以下の通り変更してください。
+
+使用デバイス: cuda を選択
+
+計算タイプ: float16: 標準的なGPU設定（推奨）
+
+int8_float16: VRAM消費を抑えつつ高速に動作させたい場合（VRAM 4GB以下の環境で推奨）
+
+### 5. パフォーマンスの目安
+GPU（CUDA）を使用することで、CPU処理と比較して約 5倍〜10倍 程度の高速化が期待できます。特に large-v3-turbo モデルを使用する際は、GPUの使用を強く推奨します。
 
 ## ライセンス
 MIT License
