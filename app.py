@@ -15,7 +15,9 @@ from faster_whisper import WhisperModel
 CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
     "model_size": "small",
-    "hotkey": ["f8"],  # リスト形式に統一
+    "device": "cpu",          # 追加: cpu または cuda
+    "compute_type": "int8",   # 追加: int8, float16, int8_float16 など
+    "hotkey": ["f8"],
     "initial_prompt": "こんにちは。日本語の文字起こしです。句読点をつけて自然に変換してください。"
 }
 CHUNK = 1024
@@ -32,9 +34,9 @@ class WhisperApp(ctk.CTk):
         # 1. 設定の読み込み
         self.config = self.load_config()
 
-        # 2. GUIの初期設定
+        # --- 2. GUIの初期設定 ---
         self.title("Whisper Voice Settings")
-        self.geometry("400x470")
+        self.geometry("400x520")  # 470から520へ変更
         self.protocol('WM_DELETE_WINDOW', self.hide_window)
 
         # 3. 状態管理
@@ -58,7 +60,11 @@ class WhisperApp(ctk.CTk):
         self.setup_indicator()
 
         # 6. エンジンの初期化 (別スレッド)
-        self.update_model_async(self.config["model_size"])
+        self.update_model_async(
+            self.config["model_size"],
+            self.config["device"],
+            self.config["compute_type"]
+        )
 
         # 7. 裏方の起動
         self.listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
@@ -70,27 +76,58 @@ class WhisperApp(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(self, text="Whisper 音声入力設定", font=("Meiryo", 20, "bold")).grid(row=0, column=0, pady=20)
 
-        ctk.CTkLabel(self, text="使用モデル").grid(row=1, column=0, sticky="w", padx=40)
+        # 1. モデル選択 (row 1-2)
+        ctk.CTkLabel(self, text="使用モデル:").grid(row=1, column=0, sticky="w", padx=40)
         self.model_menu = ctk.CTkOptionMenu(self, values=["tiny", "base", "small", "medium", "large-v3-turbo"],
-                                            command=self.on_model_change)
-        self.model_menu.set(self.config["model_size"])
-        self.model_menu.grid(row=2, column=0, padx=40, pady=(0, 20), sticky="ew")
+                                            command=self.on_config_change)
+        self.model_menu.set(self.config.get("model_size", "small"))
+        self.model_menu.grid(row=2, column=0, padx=40, pady=(0, 10), sticky="ew")
 
-        ctk.CTkLabel(self, text="録音キー (複数可):").grid(row=3, column=0, sticky="w", padx=40)
+        # 2. デバイス選択 (row 3-4)
+        ctk.CTkLabel(self, text="使用デバイス (GPUならcuda):").grid(row=3, column=0, sticky="w", padx=40)
+        self.device_menu = ctk.CTkOptionMenu(self, values=["cpu", "cuda"], command=self.on_config_change)
+        self.device_menu.set(self.config.get("device", "cpu"))
+        self.device_menu.grid(row=4, column=0, padx=40, pady=(0, 10), sticky="ew")
+
+        # 3. 計算タイプ選択 (row 5-6)
+        # ラベルのテキストを CPU/GPU 両方の推奨がわかるように変更
+        ctk.CTkLabel(self, text="計算タイプ (CPU:int8 / GPU:float16推奨):").grid(row=5, column=0, sticky="w", padx=40)
+        self.compute_menu = ctk.CTkOptionMenu(self, values=["int8", "float16", "int8_float16", "float32"],
+                                              command=self.on_config_change)
+        self.compute_menu.set(self.config.get("compute_type", "int8"))
+        self.compute_menu.grid(row=6, column=0, padx=40, pady=(0, 10), sticky="ew")
+
+        # 4. 録音キー設定 (row 7-8)
+        ctk.CTkLabel(self, text="録音キー (複数可):").grid(row=7, column=0, sticky="w", padx=40)
         hotkey_text = " + ".join(self.config["hotkey"]).upper()
         self.key_button = ctk.CTkButton(self, text=hotkey_text, command=self.start_key_capture)
-        self.key_button.grid(row=4, column=0, padx=40, pady=(0, 20), sticky="ew")
+        self.key_button.grid(row=8, column=0, padx=40, pady=(0, 10), sticky="ew")
 
-        ctk.CTkLabel(self, text="初期プロンプト:").grid(row=5, column=0, sticky="w", padx=40)
+        # 5. プロンプト設定 (row 9-10)
+        ctk.CTkLabel(self, text="初期プロンプト:").grid(row=9, column=0, sticky="w", padx=40)
         self.prompt_entry = ctk.CTkEntry(self)
         self.prompt_entry.insert(0, self.config["initial_prompt"])
-        self.prompt_entry.grid(row=6, column=0, padx=40, pady=(0, 20), sticky="ew")
+        self.prompt_entry.grid(row=10, column=0, padx=40, pady=(0, 10), sticky="ew")
 
+        # 6. 保存ボタン (row 11)
         self.save_button = ctk.CTkButton(self, text="設定を保存して適用", fg_color="green", command=self.save_settings)
-        self.save_button.grid(row=7, column=0, padx=40, pady=10, sticky="ew")
+        self.save_button.grid(row=11, column=0, padx=40, pady=20, sticky="ew")
 
+        # 7. ステータス (row 12)
         self.status_label = ctk.CTkLabel(self, text="準備完了", text_color="gray")
-        self.status_label.grid(row=8, column=0, pady=10)
+        self.status_label.grid(row=12, column=0, pady=10)
+    # 設定変更時の共通ハンドラ
+    def on_config_change(self, _=None):
+        self.config["model_size"] = self.model_menu.get()
+        self.config["device"] = self.device_menu.get()
+        self.config["compute_type"] = self.compute_menu.get()
+
+        # モデルの再ロード
+        self.update_model_async(
+            self.config["model_size"],
+            self.config["device"],
+            self.config["compute_type"]
+        )
 
     # --- キー変換ロジック ---
     def get_target_keys(self):
@@ -121,13 +158,19 @@ class WhisperApp(ctk.CTk):
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 conf = json.load(f)
-                # 旧バージョンの文字列設定をリストに変換
-                if isinstance(conf["hotkey"], str):
-                    conf["hotkey"] = [conf["hotkey"]]
+                # 新しい設定項目がない場合の補完
+                if "device" not in conf:
+                    conf["device"] = "cpu"
+                if "compute_type" not in conf:
+                    conf["compute_type"] = "int8"
                 return conf
         return DEFAULT_CONFIG.copy()
 
+
     def save_settings(self):
+        self.config["model_size"] = self.model_menu.get()
+        self.config["device"] = self.device_menu.get()
+        self.config["compute_type"] = self.compute_menu.get()
         self.config["initial_prompt"] = self.prompt_entry.get()
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.config, f, ensure_ascii=False, indent=2)
@@ -137,16 +180,21 @@ class WhisperApp(ctk.CTk):
         self.config["model_size"] = new_size
         self.update_model_async(new_size)
 
-    def update_model_async(self, size):
+    def update_model_async(self, size, device, compute_type):
         def load():
             self.is_loading_model = True
-            self.status_label.configure(text=f"モデル {size} をロード中...", text_color="orange")
-            self.model = WhisperModel(size, device="cpu", compute_type="int8")
-            self.is_loading_model = False
-            self.status_label.configure(text="準備完了", text_color="green")
+            self.status_label.configure(text=f"ロード中 ({size}/{device}/{compute_type})...", text_color="orange")
+            try:
+                # 設定値を反映してロード
+                self.model = WhisperModel(size, device=device, compute_type=compute_type)
+                self.status_label.configure(text="準備完了", text_color="green")
+            except Exception as e:
+                self.status_label.configure(text=f"エラー: GPU設定を確認してください", text_color="red")
+                print(f"Model load error: {e}")
+            finally:
+                self.is_loading_model = False
 
         threading.Thread(target=load, daemon=True).start()
-
     def start_key_capture(self):
         self.waiting_for_key = True
         self.captured_keys = []
