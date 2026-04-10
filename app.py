@@ -90,47 +90,58 @@ class WhisperApp(ctk.CTk):
         self.listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         self.listener.start()
         self.setup_tray()
+        self.pygame_initialized = False
 
     async def speak_english(self, english_text: str):
-        """edge-tts → 一時ファイルで再生 → 即削除（Permission denied対策強化版）"""
+        """頭カット対策版：pygame mixerを事前初期化 + 先頭に無音追加"""
         if not english_text or not english_text.strip():
             return
 
-        voice = "en-US-AndrewNeural"  # 好みで「en-US-AvaNeural」など変更可
-        temp_file = f"temp_tts_{int(asyncio.get_event_loop().time() * 1000)}.mp3"  # ユニークなファイル名
+        voice = "en-US-AndrewNeural"   # または "en-US-AvaNeural" などお好みで
+
+        temp_file = f"temp_tts_{int(asyncio.get_event_loop().time() * 1000)}.mp3"
 
         try:
-            # 1. MP3保存
-            communicate = edge_tts.Communicate(english_text, voice=voice)
+            # 1. pygame mixer を初回のみ初期化（毎回initしないのが重要）
+            if not self.pygame_initialized:
+                import pygame
+                pygame.mixer.pre_init(frequency=24000, size=-16, channels=1, buffer=1024)
+                pygame.mixer.init()
+                self.pygame_initialized = True
+                self.pygame_module = pygame   # 後で使い回す
+
+            # 2. 先頭に短い無音を追加（頭カット対策として非常に効果的）
+            silent_text = "   " + english_text   # スペース3つ程度で0.1〜0.2秒の無音相当
+
+            # 3. MP3生成
+            communicate = edge_tts.Communicate(silent_text, voice=voice)
             await communicate.save(temp_file)
 
-            # 2. pygameで再生
-            import pygame
-            pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
-
-            pygame.mixer.music.unload()  # ← 前のファイルを確実に解放
-            pygame.mixer.music.load(temp_file)
-            pygame.mixer.music.play()
+            # 4. 再生
+            self.pygame_module.mixer.music.unload()
+            self.pygame_module.mixer.music.load(temp_file)
+            self.pygame_module.mixer.music.play()
 
             # 再生終了まで待機
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
+            while self.pygame_module.mixer.music.get_busy():
+                self.pygame_module.time.Clock().tick(20)   # 少し細かくチェック
 
-            print("音声再生完了（自然な音質）")
+            print("音声再生完了（頭カット対策版）")
 
         except Exception as e:
             print(f"音声再生エラー: {e}")
             self.after(0, lambda: self.status_label.configure(
                 text="音声エラー", text_color="red"))
         finally:
-            # 再生後に確実にファイル削除
+            # 少し待ってからファイル削除（ロック対策）
             import time
-            time.sleep(0.3)  # 少し待ってから削除（ロック解除待ち）
+            time.sleep(0.25)
             if os.path.exists(temp_file):
                 try:
                     os.remove(temp_file)
-                except Exception as del_e:
-                    print(f"ファイル削除失敗（無視）: {del_e}")
+                except:
+                    pass
+
     # --- UI作成 ---
     def create_widgets(self):
 
