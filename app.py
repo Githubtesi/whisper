@@ -3,10 +3,14 @@ import sys
 
 # EXE化された環境（frozen）かどうかを判定
 if getattr(sys, 'frozen', False):
-    # EXEがあるフォルダパスを取得
-    basedir = os.path.dirname(sys.executable)
-    # DLL検索パスに強制追加
-    os.add_dll_directory(basedir)
+    # EXE実行時のパス（_internalフォルダを指すように調整）
+    base_path = sys._MEIPASS
+    # ライブラリがある場所を明示的に指定
+    torch_lib_path = os.path.join(base_path, "torch", "lib")
+    if os.path.exists(torch_lib_path):
+        os.add_dll_directory(torch_lib_path)
+    # EXEの直下も検索対象にする
+    os.add_dll_directory(os.path.dirname(sys.executable))
 
 import json
 import threading
@@ -19,14 +23,16 @@ from pystray import Icon, Menu, MenuItem
 from PIL import Image, ImageDraw
 from faster_whisper import WhisperModel
 
-# --- 定数・デフォルト設定 ---
+# --- DEFAULT_CONFIG に新しい項目を追加 ---
 CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
-    "model_size": "small",
-    "device": "cpu",          # 追加: cpu または cuda
-    "compute_type": "int8",   # 追加: int8, float16, int8_float16 など
-    "hotkey": ["f8"],
-    "initial_prompt": "こんにちは。日本語の文字起こしです。句読点をつけて自然に変換してください。"
+    "model_size": "large-v3",
+    "device": "cuda",
+    "compute_type": "float16",
+    "hotkey": ["ctrl_l", "cmd"],
+    "initial_prompt": "こんにちは。日本語の文字起こしです。句読点をつけて自然に変換してください。",
+    "input_language": "ja",          # 新規追加: "ja", "en", "auto"
+    "output_language": "ja"          # 新規追加: "ja"（日本語） or "en"（英語翻訳）
 }
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
@@ -44,7 +50,7 @@ class WhisperApp(ctk.CTk):
 
         # --- 2. GUIの初期設定 ---
         self.title("Whisper Voice Settings")
-        self.geometry("400x520")  # 470から520へ変更
+        self.geometry("400x700")  # 470から520へ変更
         self.protocol('WM_DELETE_WINDOW', self.hide_window)
 
         # 3. 状態管理
@@ -83,10 +89,9 @@ class WhisperApp(ctk.CTk):
     def create_widgets(self):
         self.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(self, text="Whisper 音声入力設定", font=("Meiryo", 20, "bold")).grid(row=0, column=0, pady=20)
-
         # 1. モデル選択 (row 1-2)
         ctk.CTkLabel(self, text="使用モデル:").grid(row=1, column=0, sticky="w", padx=40)
-        self.model_menu = ctk.CTkOptionMenu(self, values=["tiny", "base", "small", "medium", "large-v3-turbo"],
+        self.model_menu = ctk.CTkOptionMenu(self, values=["tiny", "base", "small", "medium","large-v3", "large-v3-turbo"],
                                             command=self.on_config_change)
         self.model_menu.set(self.config.get("model_size", "small"))
         self.model_menu.grid(row=2, column=0, padx=40, pady=(0, 10), sticky="ew")
@@ -117,13 +122,81 @@ class WhisperApp(ctk.CTk):
         self.prompt_entry.insert(0, self.config["initial_prompt"])
         self.prompt_entry.grid(row=10, column=0, padx=40, pady=(0, 10), sticky="ew")
 
-        # 6. 保存ボタン (row 11)
-        self.save_button = ctk.CTkButton(self, text="設定を保存して適用", fg_color="green", command=self.save_settings)
-        self.save_button.grid(row=11, column=0, padx=40, pady=20, sticky="ew")
+        # === 新規追加：入力言語 ===
+        row = 13  # 既存項目の次の行から開始（実際の行番号は既存コードに合わせて調整してください）
+        ctk.CTkLabel(self, text="入力言語 (音声認識言語):").grid(row=row, column=0, sticky="w", padx=40)
+        self.input_lang_menu = ctk.CTkOptionMenu(
+            self,
+            values=["日本語優先", "英語優先", "自動検出"],
+            command=self.on_config_change
+        )
+        current_input = self.config.get("input_language", "ja")
+        self.input_lang_menu.set({
+                                     "ja": "日本語優先",
+                                     "en": "英語優先",
+                                     "auto": "自動検出"
+                                 }.get(current_input, "日本語優先"))
+        self.input_lang_menu.grid(row=row + 1, column=0, padx=40, pady=(0, 10), sticky="ew")
 
-        # 7. ステータス (row 12)
+        # === 新規追加：出力言語 ===
+        row += 2
+        ctk.CTkLabel(self, text="出力言語 (最終出力):").grid(row=row, column=0, sticky="w", padx=40)
+        self.output_lang_menu = ctk.CTkOptionMenu(
+            self,
+            values=["日本語", "英語（翻訳）"],
+            command=self.on_config_change
+        )
+        current_output = self.config.get("output_language", "ja")
+        self.output_lang_menu.set("日本語" if current_output == "ja" else "英語（翻訳）")
+        self.output_lang_menu.grid(row=row + 1, column=0, padx=40, pady=(0, 10), sticky="ew")
+
+        # 保存ボタン（既存のものを下に移動）
+        self.save_button = ctk.CTkButton(self, text="設定を保存して適用", fg_color="green", command=self.save_settings)
+        self.save_button.grid(row=row + 3, column=0, padx=40, pady=20, sticky="ew")
+
+        # ステータスラベル
         self.status_label = ctk.CTkLabel(self, text="準備完了", text_color="gray")
-        self.status_label.grid(row=12, column=0, pady=10)
+        self.status_label.grid(row=row + 4, column=0, pady=10)
+
+    def transcribe_audio(self, audio_path: str) -> str:
+        if not self.model:
+            return "モデルがロードされていません"
+
+        input_lang = self.config.get("input_language", "ja")
+        output_lang = self.config.get("output_language", "ja")
+
+        whisper_lang = None if input_lang == "auto" else input_lang
+        task = "translate" if output_lang == "en" else "transcribe"
+
+        # プロンプトの調整
+        base_prompt = self.config.get("initial_prompt", "")
+        if output_lang == "en":
+            prompt = base_prompt + " Translate to natural English."
+        else:
+            prompt = base_prompt + " 自然な日本語で句読点をつけて出力してください。"
+
+        try:
+            segments, info = self.model.transcribe(
+                audio_path,
+                language=whisper_lang,
+                task=task,  # "transcribe" or "translate"
+                initial_prompt=prompt.strip(),
+                beam_size=5,
+                vad_filter=True,  # 無音スキップ（おすすめ）
+                word_timestamps=False
+            )
+
+            result_text = "".join(segment.text for segment in segments).strip()
+
+            # デバッグ用（コンソール出力）
+            print(f"[Whisper] Detected language: {info.language}, Task: {task}, Output: {output_lang}")
+
+            return result_text
+
+        except Exception as e:
+            print(f"Transcription error: {e}")
+            return f"エラー: {str(e)}"
+
     # 設定変更時の共通ハンドラ
     def on_config_change(self, _=None):
         self.config["model_size"] = self.model_menu.get()
@@ -168,9 +241,14 @@ class WhisperApp(ctk.CTk):
                 conf = json.load(f)
                 # 新しい設定項目がない場合の補完
                 if "device" not in conf:
-                    conf["device"] = "cpu"
+                    conf["device"] = ("cuda")
                 if "compute_type" not in conf:
-                    conf["compute_type"] = "int8"
+                    conf["compute_type"] = "int16"
+
+                if "input_language" not in conf:
+                    conf["input_language"] = "ja"
+                if "output_language" not in conf:
+                    conf["output_language"] = "ja"
                 return conf
         return DEFAULT_CONFIG.copy()
 
@@ -180,6 +258,15 @@ class WhisperApp(ctk.CTk):
         self.config["device"] = self.device_menu.get()
         self.config["compute_type"] = self.compute_menu.get()
         self.config["initial_prompt"] = self.prompt_entry.get()
+
+        # 新規追加
+        input_map = {"日本語優先": "ja", "英語優先": "en", "自動検出": "auto"}
+        self.config["input_language"] = input_map.get(self.input_lang_menu.get(), "ja")
+
+        self.config["output_language"] = "en" if self.output_lang_menu.get() == "英語（翻訳）" else "ja"
+
+
+
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.config, f, ensure_ascii=False, indent=2)
         self.status_label.configure(text="設定を保存しました", text_color="green")
@@ -261,6 +348,7 @@ class WhisperApp(ctk.CTk):
         self.pressed_keys.discard(key)
 
     def _process_thread(self):
+        # 録音データをWAVファイルに保存
         wf = wave.open(TEMP_FILE, 'wb')
         wf.setnchannels(CHANNELS)
         wf.setsampwidth(self.audio.get_sample_size(FORMAT))
@@ -269,18 +357,30 @@ class WhisperApp(ctk.CTk):
         wf.close()
 
         try:
-            segments, _ = self.model.transcribe(TEMP_FILE, language="ja", beam_size=5,
-                                                initial_prompt=self.config["initial_prompt"])
-            text = "".join([s.text for s in segments])
+            # === ここを修正：transcribe_audio を使う ===
+            text = self.transcribe_audio(TEMP_FILE)
+
             if text.strip():
                 pyperclip.copy(text)
+                # Ctrl + V で貼り付け（Windows/Mac両対応を少し強化）
                 self.kb_controller.press(keyboard.Key.ctrl)
                 self.kb_controller.press('v')
                 self.kb_controller.release('v')
                 self.kb_controller.release(keyboard.Key.ctrl)
+                print(f"出力完了: {text[:100]}...")  # デバッグ用
+            else:
+                print("認識結果が空です")
+
+        except Exception as e:
+            print(f"処理エラー: {e}")
+            self.after(0, lambda: self.status_label.configure(text=f"エラー: {str(e)}", text_color="red"))
         finally:
             self.after(0, self.hide_indicator)
-            if os.path.exists(TEMP_FILE): os.remove(TEMP_FILE)
+            if os.path.exists(TEMP_FILE):
+                try:
+                    os.remove(TEMP_FILE)
+                except:
+                    pass
 
     # --- トレイ・ウィンドウ制御 ---
     def setup_tray(self):
