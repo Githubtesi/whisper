@@ -92,12 +92,20 @@ class WhisperApp(ctk.CTk):
         #     self.config["device"],
         #     self.config["compute_type"]
         # )
-        
+
         # 7. 裏方の起動
         self.listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         self.listener.start()
         self.setup_tray()
         self.pygame_initialized = False
+
+        # マイク一覧を表示（コンソールで確認してください）
+        p = pyaudio.PyAudio()
+        print("--- 利用可能なマイク一覧 ---")
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            print(f"Index {i}: {info['name']}")
+        p.terminate()
 
     async def speak_english(self, english_text: str):
         """ファイルを生成せず、メモリ上のバッファから再生する"""
@@ -250,6 +258,7 @@ class WhisperApp(ctk.CTk):
         """
         ローカルモデルを使わず、OpenAI APIを使って文字起こしと翻訳を行う
         """
+        print("--- API送信プロセス開始 ---")  # これを追加
         try:
             # 1. 録音データをメモリ上のWAVファイル形式にする
             # APIはファイル形式（wav/mp3等）である必要があるため、メモリ内でWAVヘッダーを付けます
@@ -264,15 +273,22 @@ class WhisperApp(ctk.CTk):
             # OpenAI APIがファイル名を要求するため、仮想的な名前を付けます
             buffer.name = "temp_recording.wav"
 
+            print("OpenAI APIにリクエストを投げます...")  # これも追加
+
             # 2. 日本語文字起こし（Transcribe）
             # initial_prompt は設定画面から引き継げます
+            # transcribe_audio メソッド内の API 呼び出し部分
             transcript_jp = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=buffer,
                 language="ja",
-                prompt=self.config.get("initial_prompt", "")
+                prompt=self.config.get("initial_prompt", ""),
+                temperature=0  # ← これを追加！ 0に近いほど「正確・保守的」な出力になります
             )
+            print("APIから返答が来ました！")  # これも追加
             japanese_text = transcript_jp.text
+            # APIから返答が来ました！ のすぐ後に追加
+            print(f"--- APIの認識結果: [{transcript_jp.text}] ---")
 
             english_text = None
             # 3. 翻訳が必要な場合（Translate）
@@ -287,27 +303,29 @@ class WhisperApp(ctk.CTk):
             return {"japanese": japanese_text, "english": english_text}
 
         except Exception as e:
-            print(f"API Error: {e}")
-            return {"japanese": f"APIエラー: {e}", "english": None}
+            print(f"詳細なエラー内容: {e}")  # これをコンソール（黒い画面）で確認！
+            self.after(0, lambda: self.status_label.configure(
+                text=f"エラー: {type(e).__name__}", text_color="red"))
 
     def _process_thread(self):
-        """録音バイナリをnumpyに変換して処理する"""
+        """録音データをそのままAPI関数に渡す"""
         try:
-            # 1. 録音された全バイトデータを結合
+            # 1. 録音された全バイトデータを結合（これが int16 の生データです）
             audio_bytes = b''.join(self.frames)
 
-            # 2. バイナリ(int16)をWhisper用のnumpy(float32)に変換
-            audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            print(f"DEBUG: 録音されたデータサイズ = {len(audio_bytes)} バイト")
 
-            # 3. Whisper実行
-            result = self.transcribe_audio(audio_np)
+            # 2. NumPyへの変換はAPI版では不要なので飛ばします
+            # 3. Whisper実行 (audio_bytes をそのまま渡す)
+            result = self.transcribe_audio(audio_bytes)
+
+            # --- 以下は修正なし（既存の通り） ---
             japanese_text = result["japanese"].strip()
             english_text = result.get("english", "").strip()
 
             if not japanese_text:
                 return
 
-            # --- 以下、出力ロジック ---
             if english_text:
                 output_text = f"{english_text}\n{japanese_text}" if self.config.get(
                     "show_both_languages") else english_text
@@ -454,7 +472,33 @@ class WhisperApp(ctk.CTk):
         threading.Thread(target=self._record_thread, daemon=True).start()
 
     def _record_thread(self):
-        stream = self.audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+        target_name = "BY-V"  # 探したいマイクの名前（一部でもOK）
+        found_index = None
+
+        p = pyaudio.PyAudio()
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            # 名前の中に指定した文字が入っているかチェック
+            if target_name.upper() in info['name'].upper():
+                found_index = i
+                break
+
+        # 見つからなかった場合は標準(None)を使用
+        if found_index is None:
+            print(f"警告: {target_name} が見つかりません。標準マイクを使用します。")
+        else:
+            print(f"固定マイクを発見: Index {found_index} ({target_name})")
+        # ----------------------------
+
+        stream = self.audio.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=RATE,
+            input=True,
+            input_device_index=found_index,  # ここにメモした番号を入れる！
+            frames_per_buffer=CHUNK
+        )
+        # stream = self.audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
         while self.is_recording:
             self.frames.append(stream.read(CHUNK))
         stream.stop_stream()
