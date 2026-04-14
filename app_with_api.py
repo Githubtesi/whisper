@@ -87,12 +87,12 @@ class WhisperApp(ctk.CTk):
         self.setup_indicator()
 
         # 6. エンジンの初期化 (別スレッド)
-        self.update_model_async(
-            self.config["model_size"],
-            self.config["device"],
-            self.config["compute_type"]
-        )
-
+        # self.update_model_async(
+        #     self.config["model_size"],
+        #     self.config["device"],
+        #     self.config["compute_type"]
+        # )
+        
         # 7. 裏方の起動
         self.listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         self.listener.start()
