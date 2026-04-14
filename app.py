@@ -1,8 +1,11 @@
+import io
 import os
 import sys
 import asyncio
 import edge_tts
 import time
+
+import numpy as np
 
 # EXE化された環境（frozen）かどうかを判定
 if getattr(sys, 'frozen', False):
@@ -93,54 +96,42 @@ class WhisperApp(ctk.CTk):
         self.pygame_initialized = False
 
     async def speak_english(self, english_text: str):
-        """頭カット対策版：pygame mixerを事前初期化 + 先頭に無音追加"""
+        """ファイルを生成せず、メモリ上のバッファから再生する"""
         if not english_text or not english_text.strip():
             return
 
-        voice = "en-US-AndrewNeural"   # または "en-US-AvaNeural" などお好みで
-
-        temp_file = f"temp_tts_{int(asyncio.get_event_loop().time() * 1000)}.mp3"
+        voice = "en-US-AndrewNeural"
 
         try:
-            # 1. pygame mixer を初回のみ初期化（毎回initしないのが重要）
             if not self.pygame_initialized:
-                import pygame
                 pygame.mixer.pre_init(frequency=24000, size=-16, channels=1, buffer=1024)
                 pygame.mixer.init()
                 self.pygame_initialized = True
-                self.pygame_module = pygame   # 後で使い回す
+                self.pygame_module = pygame
 
-            # 2. 先頭に短い無音を追加（頭カット対策として非常に効果的）
-            silent_text = "   " + english_text   # スペース3つ程度で0.1〜0.2秒の無音相当
+            # 1. edge-ttsの結果をメモリ上のBytesIOバッファに書き込む
+            mp3_buffer = io.BytesIO()
+            communicate = edge_tts.Communicate("   " + english_text, voice=voice)
 
-            # 3. MP3生成
-            communicate = edge_tts.Communicate(silent_text, voice=voice)
-            await communicate.save(temp_file)
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    mp3_buffer.write(chunk["data"])
 
-            # 4. 再生
+            # 2. バッファの先頭に戻してpygameにロード
+            mp3_buffer.seek(0)
             self.pygame_module.mixer.music.unload()
-            self.pygame_module.mixer.music.load(temp_file)
+            # pygame 2系はファイルオブジェクトを直接ロード可能
+            self.pygame_module.mixer.music.load(mp3_buffer, "mp3")
             self.pygame_module.mixer.music.play()
 
-            # 再生終了まで待機
             while self.pygame_module.mixer.music.get_busy():
-                self.pygame_module.time.Clock().tick(20)   # 少し細かくチェック
+                self.pygame_module.time.Clock().tick(20)
 
-            print("音声再生完了（頭カット対策版）")
+            print("音声再生完了（オンメモリ）")
 
         except Exception as e:
             print(f"音声再生エラー: {e}")
-            self.after(0, lambda: self.status_label.configure(
-                text="音声エラー", text_color="red"))
-        finally:
-            # 少し待ってからファイル削除（ロック対策）
-            import time
-            time.sleep(0.25)
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except:
-                    pass
+        # finallyでのファイル削除処理も不要になります
 
     # --- UI作成 ---
     def create_widgets(self):
@@ -251,74 +242,85 @@ class WhisperApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(self, text="準備完了", text_color="gray")
         self.status_label.grid(row=row + 4, column=0, pady=10)
 
-
-
-    def transcribe_audio(self, audio_path: str) -> dict:
+    def transcribe_audio(self, audio_data: np.ndarray) -> dict:
         """
-        常に日本語原文を取得し、必要に応じて英語翻訳も行う。
-        戻り値: {"japanese": str, "english": str or None}
+        ファイルパスではなく、NumPy配列を受け取って文字起こしする
         """
         if not self.model:
-            return {"japanese": "モデルがロードされていません", "english": None}
+            return {"japanese": "モデル未ロード", "english": None}
 
         input_lang = self.config.get("input_language", "ja")
         do_translate = self.config.get("output_language", "ja") == "en"
-
         whisper_lang = None if input_lang == "auto" else input_lang
         base_prompt = self.config.get("initial_prompt", "")
 
         try:
-            # 1. 常に日本語で文字起こし（原文確保）
+            # faster-whisperはファイルパスの代わりにnumpy配列(float32)を直接受け取れます
             segments_jp, info = self.model.transcribe(
-                audio_path,
+                audio_data,
                 language=whisper_lang,
                 task="transcribe",
-                initial_prompt=base_prompt + " 自然な日本語で句読点をつけて出力してください。",
-                beam_size=5,
-                vad_filter=True,
-                word_timestamps=False
+                initial_prompt=base_prompt + " 自然な日本語で。 ",
+                vad_filter=True
             )
             japanese_text = "".join(segment.text for segment in segments_jp).strip()
-
             english_text = None
 
-            # 2. 翻訳が必要な場合（英語出力モード）
             if do_translate and japanese_text:
-                # ★★★ 翻訳プロンプトを大幅強化 ★★★
-                translate_prompt = (
-                    "Translate the following Japanese speech into natural, fluent English. "
-                    "Do not leave any Japanese words. Output only clean English sentences. "
-                    "Use polite business English if it sounds like a business email or reply."
-                )
-
+                translate_prompt = "Translate to natural English."
                 segments_en, _ = self.model.transcribe(
-                    audio_path,
+                    audio_data,
                     language=whisper_lang,
                     task="translate",
-                    initial_prompt=translate_prompt,   # 強い指示に変更
-                    beam_size=7,                      # 少し精度を上げる
-                    vad_filter=True,
-                    word_timestamps=False
+                    initial_prompt=translate_prompt,
+                    vad_filter=True
                 )
                 english_text = "".join(segment.text for segment in segments_en).strip()
 
-                # 念のため後処理：日本語が残っていたら除去（簡易的）
-                if any(ord(c) > 127 for c in english_text):  # 日本語文字が残っている場合
-                    print("警告: 翻訳結果に日本語が残っていたため、簡易クリーンアップ")
-                    # ここにさらに強い後処理を入れたい場合は教えてください
-
-            print(f"[Whisper] Detected: {info.language}, Japanese: {len(japanese_text)}文字, "
-                  f"English: {'あり' if english_text else 'なし'}")
-
-            if english_text:
-                print(f"[English Output] {english_text[:150]}...")
-
             return {"japanese": japanese_text, "english": english_text}
-
         except Exception as e:
             print(f"Transcription error: {e}")
             return {"japanese": f"エラー: {str(e)}", "english": None}
 
+    def _process_thread(self):
+        """録音バイナリをnumpyに変換して処理する"""
+        try:
+            # 1. 録音された全バイトデータを結合
+            audio_bytes = b''.join(self.frames)
+
+            # 2. バイナリ(int16)をWhisper用のnumpy(float32)に変換
+            audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+            # 3. Whisper実行
+            result = self.transcribe_audio(audio_np)
+            japanese_text = result["japanese"].strip()
+            english_text = result.get("english", "").strip()
+
+            if not japanese_text:
+                return
+
+            # --- 以下、出力ロジック ---
+            if english_text:
+                output_text = f"{english_text}\n{japanese_text}" if self.config.get(
+                    "show_both_languages") else english_text
+                if self.config.get("enable_audio_output"):
+                    asyncio.run(self.speak_english(english_text))
+            else:
+                output_text = japanese_text
+
+            pyperclip.copy(output_text)
+            self.kb_controller.press(keyboard.Key.ctrl)
+            self.kb_controller.press('v')
+            self.kb_controller.release('v')
+            self.kb_controller.release(keyboard.Key.ctrl)
+
+            self.after(0, lambda: self.status_label.configure(text="出力完了", text_color="green"))
+
+        except Exception as e:
+            print(f"処理エラー: {e}")
+            self.after(0, lambda: self.status_label.configure(text="エラー発生", text_color="red"))
+        finally:
+            self.after(0, self.hide_indicator)
 
     # 設定変更時の共通ハンドラ
     def on_config_change(self, _=None):
@@ -488,68 +490,6 @@ class WhisperApp(ctk.CTk):
 
         self.pressed_keys.discard(key)
 
-    def _process_thread(self):
-        # 録音データをWAVファイルに保存
-        wf = wave.open(TEMP_FILE, 'wb')
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(self.audio.get_sample_size(FORMAT))
-        wf.setframerate(RATE)
-        wf.writeframes(b''.join(self.frames))
-        wf.close()
-
-        try:
-            # Whisperで日本語＋英語（必要時）を取得
-            result = self.transcribe_audio(TEMP_FILE)
-            japanese_text = result["japanese"].strip()
-            english_text = result.get("english", "").strip() if result.get("english") else ""
-            print(japanese_text,english_text)
-
-            if not japanese_text:
-                print("認識結果が空です")
-                return
-
-            # 出力テキストを決定
-            if english_text:  # 翻訳モード（出力言語が英語）
-                if self.config.get("show_both_languages", False):
-                    output_text = f"{english_text}\n{japanese_text}"
-                else:
-                    output_text = english_text
-
-                # 音声出力（英語のみ）
-                if self.config.get("enable_audio_output", False) and english_text:
-                    try:
-                        asyncio.run(self.speak_english(english_text))
-                        self.after(0, lambda: self.status_label.configure(
-                            text="音声出力完了", text_color="green"))
-                    except Exception as e:
-                        print(f"音声出力エラー: {e}")
-                        self.after(0, lambda: self.status_label.configure(
-                            text="音声出力エラー", text_color="red"))
-            else:
-                # 日本語のみモード
-                output_text = japanese_text
-
-            # クリップボードコピー + Ctrl+V
-            pyperclip.copy(output_text)
-            self.kb_controller.press(keyboard.Key.ctrl)
-            self.kb_controller.press('v')
-            self.kb_controller.release('v')
-            self.kb_controller.release(keyboard.Key.ctrl)
-
-            print(f"出力完了: {output_text[:100]}...")
-            self.after(0, lambda: self.status_label.configure(
-                text="出力完了", text_color="green"))
-
-        except Exception as e:
-            print(f"処理エラー: {e}")
-            self.after(0, lambda: self.status_label.configure(text=f"エラー: {str(e)}", text_color="red"))
-        finally:
-            self.after(0, self.hide_indicator)
-            if os.path.exists(TEMP_FILE):
-                try:
-                    os.remove(TEMP_FILE)
-                except:
-                    pass
 
     # --- トレイ・ウィンドウ制御 ---
     def setup_tray(self):
