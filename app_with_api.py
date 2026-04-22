@@ -4,8 +4,9 @@ import sys
 import asyncio
 import edge_tts
 import time
-
+import translators as ts
 import numpy as np
+import html
 
 # EXE化された環境（frozen）かどうかを判定
 if getattr(sys, 'frozen', False):
@@ -32,7 +33,7 @@ from openai import OpenAI
 import io
 
 # クライアントの初期化（APIキーを設定）
-client = OpenAI(api_key="あなたのAPIキー")
+client = OpenAI(api_key="")
 # --- DEFAULT_CONFIG に新しい項目を追加 ---
 CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
@@ -256,12 +257,9 @@ class WhisperApp(ctk.CTk):
 
     def transcribe_audio(self, audio_bytes):
         """
-        ローカルモデルを使わず、OpenAI APIを使って文字起こしと翻訳を行う
+        OpenAI APIで文字起こしのみを行い、翻訳はここでは行わない
         """
-        print("--- API送信プロセス開始 ---")  # これを追加
         try:
-            # 1. 録音データをメモリ上のWAVファイル形式にする
-            # APIはファイル形式（wav/mp3等）である必要があるため、メモリ内でWAVヘッダーを付けます
             buffer = io.BytesIO()
             with wave.open(buffer, 'wb') as wf:
                 wf.setnchannels(CHANNELS)
@@ -270,70 +268,61 @@ class WhisperApp(ctk.CTk):
                 wf.writeframes(audio_bytes)
 
             buffer.seek(0)
-            # OpenAI APIがファイル名を要求するため、仮想的な名前を付けます
             buffer.name = "temp_recording.wav"
 
-            print("OpenAI APIにリクエストを投げます...")  # これも追加
-
-            # 2. 日本語文字起こし（Transcribe）
-            # initial_prompt は設定画面から引き継げます
-            # transcribe_audio メソッド内の API 呼び出し部分
+            # OpenAIでの文字起こし (日本語)
             transcript_jp = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=buffer,
                 language="ja",
                 prompt=self.config.get("initial_prompt", ""),
-                temperature=0  # ← これを追加！ 0に近いほど「正確・保守的」な出力になります
+                temperature=0
             )
-            print("APIから返答が来ました！")  # これも追加
+
             japanese_text = transcript_jp.text
-            # APIから返答が来ました！ のすぐ後に追加
-            print(f"--- APIの認識結果: [{transcript_jp.text}] ---")
+            print(f"--- 認識結果: [{japanese_text}] ---")
 
-            english_text = None
-            # 3. 翻訳が必要な場合（Translate）
-            if self.config.get("output_language") == "en":
-                buffer.seek(0)  # バッファを最初に戻して再利用
-                translation = client.audio.translations.create(
-                    model="whisper-1",
-                    file=buffer
-                )
-                english_text = translation.text
-
-            return {"japanese": japanese_text, "english": english_text}
+            return {"japanese": japanese_text}  # 翻訳はここでは返さない
 
         except Exception as e:
-            print(f"詳細なエラー内容: {e}")  # これをコンソール（黒い画面）で確認！
-            self.after(0, lambda: self.status_label.configure(
-                text=f"エラー: {type(e).__name__}", text_color="red"))
+            print(f"文字起こしエラー: {e}")
+            return {"japanese": ""}
 
     def _process_thread(self):
-        """録音データをそのままAPI関数に渡す"""
         try:
-            # 1. 録音された全バイトデータを結合（これが int16 の生データです）
             audio_bytes = b''.join(self.frames)
-
-            print(f"DEBUG: 録音されたデータサイズ = {len(audio_bytes)} バイト")
-
-            # 2. NumPyへの変換はAPI版では不要なので飛ばします
-            # 3. Whisper実行 (audio_bytes をそのまま渡す)
+            # 1. 文字起こし (OpenAI)
             result = self.transcribe_audio(audio_bytes)
-
-            # --- 以下は修正なし（既存の通り） ---
             japanese_text = result["japanese"].strip()
-            english_text = result.get("english", "").strip()
 
             if not japanese_text:
                 return
 
+            english_text = ""
+            # 2. 翻訳が必要な場合、DeepL (Web版シミュレート) を実行
+            if self.config.get("output_language") == "en":
+                print("DeepLで翻訳中...")
+                try:
+                    raw_text = ts.translate_text(japanese_text, from_language='ja', to_language='en', engine='deepl')
+                    # HTML特殊文字（&#39; など）を普通の文字に変換
+                    english_text = html.unescape(raw_text)
+                    print(f"DeepL翻訳結果: {english_text}")
+                except Exception as e:
+                    print(f"DeepL翻訳エラー: {e}")
+                    english_text = "[翻訳エラー]"
+
+            # 3. 出力テキストの組み立て
             if english_text:
                 output_text = f"{english_text}\n{japanese_text}" if self.config.get(
                     "show_both_languages") else english_text
+
+                # 音声出力（edge-tts）
                 if self.config.get("enable_audio_output"):
                     asyncio.run(self.speak_english(english_text))
             else:
                 output_text = japanese_text
 
+            # 4. クリップボードへのコピーと貼り付け
             pyperclip.copy(output_text)
             self.kb_controller.press(keyboard.Key.ctrl)
             self.kb_controller.press('v')
@@ -347,6 +336,7 @@ class WhisperApp(ctk.CTk):
             self.after(0, lambda: self.status_label.configure(text="エラー発生", text_color="red"))
         finally:
             self.after(0, self.hide_indicator)
+
 
     # 設定変更時の共通ハンドラ
     def on_config_change(self, _=None):
@@ -367,11 +357,11 @@ class WhisperApp(ctk.CTk):
         self.config["enable_audio_output"] = self.audio_output_var.get()
 
         # モデル再ロード
-        self.update_model_async(
-            self.config["model_size"],
-            self.config["device"],
-            self.config["compute_type"]
-        )
+        # self.update_model_async(
+        #     self.config["model_size"],
+        #     self.config["device"],
+        #     self.config["compute_type"]
+        # )
 
     # --- キー変換ロジック ---
     def get_target_keys(self):
@@ -442,7 +432,7 @@ class WhisperApp(ctk.CTk):
 
     def on_model_change(self, new_size):
         self.config["model_size"] = new_size
-        self.update_model_async(new_size)
+        # self.update_model_async(new_size)
 
     def update_model_async(self, size, device, compute_type):
         def load():
